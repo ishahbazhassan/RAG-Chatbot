@@ -1,3 +1,15 @@
+"""
+End-to-End RAG Application
+---------------------------
+Loads documents (PDF / TXT / Web URL) -> chunks them -> embeds them ->
+stores them in a local Chroma vector DB -> retrieves relevant chunks for
+a user query -> generates an answer using Groq (free-tier LLM inference,
+serving open models like Llama 3).
+
+Run with:
+    streamlit run app.py
+"""
+
 import os
 import tempfile
 
@@ -15,19 +27,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
-# --------------------------------------------------------------------------
-# Config
-# --------------------------------------------------------------------------
 PERSIST_DIR = "./chroma_db"
-EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # free, local
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.3-70b-versatile"  # check console.groq.com/docs/models for current list
+GROQ_MODEL = "llama-3.3-70b-versatile"  
 
-st.set_page_config(page_title="RAG with Groq", layout="wide")
+st.set_page_config(page_title="RAG with Groq", page_icon="📚", layout="wide")
 
-# --------------------------------------------------------------------------
-# Cached resources
-# --------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def get_embeddings():
     return HuggingFaceEmbeddings(model_name=EMBED_MODEL_NAME)
@@ -51,9 +57,6 @@ def get_llm(api_key: str):
     )
 
 
-# --------------------------------------------------------------------------
-# Ingestion helpers
-# --------------------------------------------------------------------------
 def load_uploaded_file(uploaded_file):
     """Save an uploaded file to a temp path and load it with the right loader."""
     suffix = os.path.splitext(uploaded_file.name)[1].lower()
@@ -99,9 +102,6 @@ def format_docs(docs):
     )
 
 
-# --------------------------------------------------------------------------
-# Sidebar: ingestion UI
-# --------------------------------------------------------------------------
 st.sidebar.title(" Ingest Documents")
 
 api_key = st.sidebar.text_input("Groq API Key", type="password")
@@ -143,10 +143,7 @@ if st.sidebar.button(" Clear vector store"):
     vectordb.delete_collection()
     st.sidebar.success("Vector store cleared.")
 
-# --------------------------------------------------------------------------
-# Main: chat UI
-# --------------------------------------------------------------------------
-st.title(" RAG Chatbot — Powered by Groq")
+st.title(" RAG Chatbot — powered by Groq")
 st.caption("Upload documents on the left, then ask questions about them below.")
 
 if "messages" not in st.session_state:
@@ -208,5 +205,59 @@ Answer (cite the source filename/URL where relevant):"""
                 full_response += token
                 response_placeholder.markdown(full_response + "▌")
         response_placeholder.markdown(full_response)
+
+        import re, io
+
+        def markdown_table_to_html(text):
+            """Convert markdown tables in text to HTML tables; leave other text as <p>."""
+            lines = text.split("\n")
+            html_parts = []
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                # Detect markdown table row
+                if line.strip().startswith("|") and line.strip().endswith("|"):
+                    table_lines = []
+                    while i < len(lines) and lines[i].strip().startswith("|"):
+                        table_lines.append(lines[i])
+                        i += 1
+                    # Build HTML table
+                    html_parts.append('<table border="1" style="border-collapse:collapse;width:100%">')
+                    for j, tl in enumerate(table_lines):
+                        cells = [c.strip() for c in tl.strip().strip("|").split("|")]
+                        # skip separator row (--- row)
+                        if all(re.match(r"^-+$", c) for c in cells if c):
+                            continue
+                        tag = "th" if j == 0 else "td"
+                        html_parts.append("<tr>" + "".join(f"<{tag} style='padding:4px 8px'>{c}</{tag}>" for c in cells) + "</tr>")
+                    html_parts.append("</table>")
+                else:
+                    if line.strip():
+                        html_parts.append(f"<p>{line}</p>")
+                    i += 1
+            return "\n".join(html_parts)
+
+        html_content = f"""
+        <html><head><meta charset='utf-8'>
+        <style>
+            body {{ font-family: Calibri, Arial, sans-serif; font-size: 11pt; margin: 40px; }}
+            table {{ border-collapse: collapse; width: 100%; margin: 12px 0; }}
+            th, td {{ border: 1px solid #888; padding: 6px 10px; text-align: left; }}
+            th {{ background-color: #4472C4; color: white; font-weight: bold; }}
+            tr:nth-child(even) td {{ background-color: #f2f2f2; }}
+            p {{ margin: 6px 0; }}
+        </style></head>
+        <body>{markdown_table_to_html(full_response)}</body></html>
+        """
+
+        st.download_button(
+            label=" Download as Word-compatible file (.doc)",
+            data=html_content.encode("utf-8"),
+            file_name="rag_response.doc",
+            mime="application/msword",
+        )
+
+        with st.expander(" Copy raw text"):
+            st.code(full_response, language=None)
 
     st.session_state.messages.append({"role": "assistant", "content": full_response})
